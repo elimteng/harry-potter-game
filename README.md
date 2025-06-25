@@ -2,7 +2,7 @@
 
 A thrilling wizard action game built with React, TypeScript, and Phaser 3, where players defend Hogwarts against dark forces using magical spells and strategic character switching.
 
-![Game Preview](public/images/background.png)
+![Game Preview](public/images/demo.png)
 
 ## 🎮 Game Description
 
