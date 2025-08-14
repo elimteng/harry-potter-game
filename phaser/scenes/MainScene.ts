@@ -6,6 +6,9 @@ import { PlayerSprite } from '../sprites/PlayerSprite';
 import { EnemySprite } from '../sprites/EnemySprite';
 import { SpellSprite } from '../sprites/SpellSprite';
 import { FoodSprite } from '../sprites/FoodSprite';
+import { ECSAdapter } from '../../ecs/ECSAdapter';
+import { PositionComponent } from '../../ecs/Component';
+import { ECSVisualDebugger } from '../../ecs/ECSVisualDebugger';
 
 export enum GameState {
     MENU = 'menu',
@@ -84,11 +87,20 @@ export class MainScene extends Phaser.Scene {
     // 背景音乐
     private backgroundMusic: Phaser.Sound.BaseSound | null = null;
     
+    // 滚动背景
+    private backgroundTiles: Phaser.GameObjects.TileSprite[] = [];
+    private backgroundSpeed: number = 100; // 背景滚动速度（像素/秒）
+    
+    // ECS适配器
+    private ecsAdapter: ECSAdapter;
+    private ecsDebugger!: ECSVisualDebugger;
+    
     private logger: Logger;
 
     constructor() {
         super({ key: 'MainScene' });
         this.logger = Logger.getInstance();
+        this.ecsAdapter = new ECSAdapter();
     }
 
     preload() {
@@ -149,6 +161,9 @@ export class MainScene extends Phaser.Scene {
         // 设置事件监听
         this.setupEventListeners();
 
+        // 初始化ECS调试器
+        this.ecsDebugger = new ECSVisualDebugger(this, this.ecsAdapter);
+
         // 初始化游戏状态
         this.gameState = GameState.MENU;
 
@@ -166,22 +181,221 @@ export class MainScene extends Phaser.Scene {
     }
 
     private createBackground() {
-        // 尝试使用背景图片
-        const bg = this.add.image(0, 0, 'background');
+        // 创建滚动背景
+        this.createScrollingBackground();
+    }
+    
+    private createScrollingBackground() {
+        // 尝试使用背景图片创建滚动背景
+        const bg = this.add.tileSprite(0, 0, this.cameras.main.width, this.cameras.main.height, 'background');
+        
         if (bg.texture.key !== '__MISSING') {
-            // 缩放背景以适应屏幕
+            // 设置背景位置和缩放
+            bg.setOrigin(0, 0);
+            
+            // 计算合适的缩放比例
             const scaleX = this.cameras.main.width / bg.width;
             const scaleY = this.cameras.main.height / bg.height;
             const scale = Math.max(scaleX, scaleY);
             
-            bg.setOrigin(0, 0);
             bg.setScale(scale);
-            this.logger.info('MainScene', '使用背景图片创建背景');
+            
+            // 添加到背景数组
+            this.backgroundTiles.push(bg);
+            
+            this.logger.info('MainScene', '创建滚动背景成功');
         } else {
-            // 如果背景图片加载失败，创建纯色背景
-            this.cameras.main.setBackgroundColor('#001122');
-            this.logger.warn('MainScene', '背景图片加载失败，使用纯色背景');
+            // 如果背景图片加载失败，创建渐变背景
+            this.createGradientBackground();
+            this.logger.warn('MainScene', '背景图片加载失败，使用渐变背景');
         }
+        
+        // 确保至少有一个背景瓦片
+        if (this.backgroundTiles.length === 0) {
+            this.logger.warn('MainScene', '没有创建任何背景瓦片，创建默认背景');
+            this.createDefaultBackground();
+        }
+    }
+    
+    private createGradientBackground() {
+        // 创建渐变背景
+        const graphics = this.add.graphics();
+        
+        // 创建从深蓝到黑色的渐变
+        graphics.fillGradientStyle(0x001122, 0x001122, 0x000033, 0x000033, 1);
+        graphics.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+        
+        // 添加一些星星效果
+        this.createStarField();
+        
+        this.logger.info('MainScene', '创建渐变背景成功');
+    }
+    
+    private createStarField() {
+        // 创建星空效果
+        const stars = this.add.graphics();
+        stars.fillStyle(0xFFFFFF, 0.8);
+        
+        // 随机生成星星
+        for (let i = 0; i < 100; i++) {
+            const x = Math.random() * this.cameras.main.width;
+            const y = Math.random() * this.cameras.main.height;
+            const size = Math.random() * 2 + 1;
+            
+            stars.fillCircle(x, y, size);
+        }
+        
+        // 将星空添加到背景数组
+        this.backgroundTiles.push(stars as any);
+    }
+    
+    private createDefaultBackground() {
+        // 创建一个简单的纯色背景作为默认背景
+        const graphics = this.add.graphics();
+        graphics.fillStyle(0x001122, 1);
+        graphics.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+        
+        // 将默认背景添加到背景数组
+        this.backgroundTiles.push(graphics as any);
+        
+        this.logger.info('MainScene', '创建默认背景成功');
+    }
+    
+    /**
+     * 创建背景特效
+     */
+    private createBackgroundEffect(effectType: 'dementor' | 'boss' | 'normal'): void {
+        // 清除现有特效
+        this.clearBackgroundEffects();
+        
+        switch (effectType) {
+            case 'dementor':
+                this.createDementorBackgroundEffect();
+                break;
+            case 'boss':
+                this.createBossBackgroundEffect();
+                break;
+            case 'normal':
+                this.createNormalBackgroundEffect();
+                break;
+        }
+    }
+    
+    private createDementorBackgroundEffect(): void {
+        // 摄魂怪出现时的背景特效
+        const effect = this.add.graphics();
+        effect.fillStyle(0x000000, 0.3);
+        effect.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+        
+        // 添加一些暗色粒子效果
+        for (let i = 0; i < 50; i++) {
+            const x = Math.random() * this.cameras.main.width;
+            const y = Math.random() * this.cameras.main.height;
+            const size = Math.random() * 3 + 1;
+            
+            effect.fillStyle(0x333333, 0.5);
+            effect.fillCircle(x, y, size);
+        }
+        
+        this.backgroundTiles.push(effect as any);
+        this.logger.info('MainScene', '创建摄魂怪背景特效');
+    }
+    
+    private createBossBackgroundEffect(): void {
+        // BOSS出现时的背景特效
+        const effect = this.add.graphics();
+        
+        // 创建红色光晕效果
+        effect.fillStyle(0xFF0000, 0.1);
+        effect.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+        
+        // 添加闪电效果
+        effect.lineStyle(2, 0xFF0000, 0.3);
+        for (let i = 0; i < 5; i++) {
+            const startX = Math.random() * this.cameras.main.width;
+            const startY = 0;
+            const endX = startX + (Math.random() - 0.5) * 100;
+            const endY = this.cameras.main.height;
+            
+            effect.beginPath();
+            effect.moveTo(startX, startY);
+            effect.lineTo(endX, endY);
+            effect.strokePath();
+        }
+        
+        this.backgroundTiles.push(effect as any);
+        this.logger.info('MainScene', '创建BOSS背景特效');
+    }
+    
+    private createNormalBackgroundEffect(): void {
+        // 恢复正常背景
+        this.logger.info('MainScene', '恢复正常背景');
+    }
+    
+    private clearBackgroundEffects(): void {
+        // 清除背景特效（保留基础背景）
+        this.backgroundTiles = this.backgroundTiles.filter(tile => 
+            tile instanceof Phaser.GameObjects.TileSprite
+        );
+    }
+    
+    private updateBackground(delta: number) {
+        // 根据游戏状态调整背景速度
+        let currentSpeed = this.backgroundSpeed;
+        
+        // 根据分数增加背景速度，增加紧张感
+        if (this.score > 1000) {
+            currentSpeed += 10;
+        }
+        if (this.score > 3000) {
+            currentSpeed += 20;
+        }
+        if (this.score > 5000) {
+            currentSpeed += 30;
+        }
+        
+        // 更新背景滚动
+        this.backgroundTiles.forEach(tile => {
+            if (tile instanceof Phaser.GameObjects.TileSprite) {
+                // 向下滚动背景
+                const scrollAmount = currentSpeed * (delta / 1000);
+                tile.tilePositionY += scrollAmount;
+                
+                // 每5秒输出一次调试信息
+                if (this.time.now % 5000 < delta) {
+                    this.logger.info('MainScene', `背景滚动: 速度=${currentSpeed}, 滚动量=${scrollAmount.toFixed(2)}, 位置Y=${tile.tilePositionY.toFixed(2)}`);
+                }
+            }
+        });
+        
+        // 如果没有背景瓦片，输出警告
+        if (this.backgroundTiles.length === 0) {
+            this.logger.warn('MainScene', '没有背景瓦片可以滚动');
+        }
+    }
+    
+    /**
+     * 设置背景滚动速度
+     */
+    public setBackgroundSpeed(speed: number): void {
+        this.backgroundSpeed = speed;
+        this.logger.info('MainScene', `背景速度设置为: ${speed}`);
+    }
+    
+    /**
+     * 暂停背景滚动
+     */
+    public pauseBackground(): void {
+        this.backgroundSpeed = 0;
+        this.logger.info('MainScene', '背景滚动已暂停');
+    }
+    
+    /**
+     * 恢复背景滚动
+     */
+    public resumeBackground(): void {
+        this.backgroundSpeed = 100;
+        this.logger.info('MainScene', '背景滚动已恢复');
     }
 
     private setupInput() {
@@ -193,6 +407,27 @@ export class MainScene extends Phaser.Scene {
             this.key1 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ONE);
             this.key2 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
             this.key3 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE);
+            
+            // 添加ECS测试键 (按F键测试ECS功能)
+            this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.F).on('down', () => {
+                this.logger.info('MainScene', '手动触发ECS测试');
+                this.ecsAdapter.testECSFunctionality();
+            });
+            
+            // 添加ECS调试面板显示键 (按G键切换显示)
+            this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.G).on('down', () => {
+                this.logger.info('MainScene', '切换ECS调试面板');
+                this.ecsDebugger.toggle();
+            });
+            
+            // 添加背景控制键 (按B键暂停/恢复背景滚动)
+            this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.B).on('down', () => {
+                if (this.backgroundSpeed > 0) {
+                    this.pauseBackground();
+                } else {
+                    this.resumeBackground();
+                }
+            });
         }
     }
 
@@ -238,6 +473,12 @@ export class MainScene extends Phaser.Scene {
             `${this.selectedCharacter}_normal`,
             `${this.selectedCharacter}_attack`
         );
+        
+        // 将玩家转换为ECS实体
+        if (this.player) {
+            this.ecsAdapter.convertPlayerSpriteToECS(this.player);
+            this.logger.info('MainScene', '玩家已转换为ECS实体');
+        }
     }
 
     private switchCharacter(character: PlayerCharacter) {
@@ -302,6 +543,9 @@ export class MainScene extends Phaser.Scene {
     }
 
     private clearGameObjects() {
+        // 清理ECS世界
+        this.ecsAdapter.clear();
+        
         // 清理玩家
         if (this.player) {
             this.player.destroy();
@@ -369,11 +613,15 @@ export class MainScene extends Phaser.Scene {
                     textureKey = 'bellatrix';
                     health = 3;
                     speed = 60;
+                    // 创建BOSS背景特效
+                    this.createBackgroundEffect('boss');
                     break;
                 case EnemyType.LUCIUS:
                     textureKey = 'lucius';
                     health = 2;
                     speed = 70;
+                    // 创建BOSS背景特效
+                    this.createBackgroundEffect('boss');
                     break;
                 case EnemyType.DEMENTOR:
                     textureKey = 'dementor';
@@ -381,6 +629,8 @@ export class MainScene extends Phaser.Scene {
                     speed = 100;
                     this.dementorActive = true;
                     EventBus.emit('dementor-spawned');
+                    // 创建摄魂怪背景特效
+                    this.createBackgroundEffect('dementor');
                     break;
                 case EnemyType.TROLL:
                     textureKey = 'troll';
@@ -408,6 +658,9 @@ export class MainScene extends Phaser.Scene {
         
         const enemy = new EnemySprite(this, x, y, textureKey, enemyType, health, speed);
         this.enemies.push(enemy);
+        
+        // 将敌人转换为ECS实体
+        this.ecsAdapter.convertEnemySpriteToECS(enemy);
         
         this.logger.info('MainScene', `生成敌人: ${enemyType} at (${x}, ${y})`);
     }
@@ -443,6 +696,9 @@ export class MainScene extends Phaser.Scene {
         const food = new FoodSprite(this, x, y, textureKey, randomType, healAmount);
         this.foods.push(food);
         
+        // 将食物转换为ECS实体
+        this.ecsAdapter.convertFoodSpriteToECS(food);
+        
         this.logger.info('MainScene', `生成食物: ${randomType} at (${x}, ${y})`);
     }
 
@@ -460,9 +716,28 @@ export class MainScene extends Phaser.Scene {
     }
 
     update(time: number, delta: number) {
+        // 更新背景滚动（无论游戏状态如何）
+        this.updateBackground(delta);
+        
         if (this.gameState !== GameState.PLAYING) {
             return;
         }
+
+        // 更新ECS世界
+        this.ecsAdapter.update(delta / 1000);
+        
+        // 同步ECS状态到玩家
+        if (this.player) {
+            this.ecsAdapter.syncStateToOriginal(this.player.name || 'player', this.player);
+        }
+        
+        // 每5秒输出一次ECS调试信息
+        if (this.time.now % 5000 < delta) {
+            this.debugECSState();
+        }
+        
+        // 更新ECS调试面板
+        this.ecsDebugger.update();
 
         // 更新角色切换冷却
         if (this.characterSwitchCooldown > 0) {
@@ -577,6 +852,9 @@ export class MainScene extends Phaser.Scene {
         );
 
         this.playerSpells.push(spell);
+        
+        // 将咒语转换为ECS实体
+        this.ecsAdapter.convertSpellSpriteToECS(spell);
     }
 
     private handleStupefyAttack() {
@@ -761,8 +1039,13 @@ export class MainScene extends Phaser.Scene {
         if (enemyType === EnemyType.DEMENTOR) {
             this.dementorActive = false;
             EventBus.emit('dementor-defeated');
+            // 恢复正常背景
+            this.createBackgroundEffect('normal');
         } else if (enemyType === EnemyType.TROLL) {
             this.trollActive = false;
+        } else if (enemyType === EnemyType.BELLATRIX || enemyType === EnemyType.LUCIUS) {
+            // BOSS被击败，恢复正常背景
+            this.createBackgroundEffect('normal');
         }
         
         // 增加分数
@@ -795,5 +1078,59 @@ export class MainScene extends Phaser.Scene {
         EventBus.emit('game-over', { score: this.score });
         
         this.logger.info('MainScene', `游戏结束，最终分数: ${this.score}`);
+    }
+    
+    /**
+     * 调试ECS状态
+     */
+    private debugECSState(): void {
+        // 使用ECS适配器的调试方法
+        this.ecsAdapter.debugState();
+        
+        // 验证ECS是否真的在处理数据
+        this.verifyECSFunctionality();
+    }
+    
+    /**
+     * 验证ECS功能
+     */
+    private verifyECSFunctionality(): void {
+        // 检查玩家实体是否在ECS中
+        const playerEntities = this.ecsAdapter.getWorld().getEntitiesWithComponent('PlayerComponent');
+        if (playerEntities.length > 0 && this.player) {
+            const playerId = playerEntities[0];
+            const positionComponent = this.ecsAdapter.getWorld().getComponent<PositionComponent>(playerId, 'PositionComponent');
+            
+            // 验证位置是否同步
+            if (positionComponent) {
+                const ecsX = Math.round(positionComponent.x);
+                const ecsY = Math.round(positionComponent.y);
+                const spriteX = Math.round(this.player.x);
+                const spriteY = Math.round(this.player.y);
+                
+                if (ecsX === spriteX && ecsY === spriteY) {
+                    this.logger.info('MainScene', `✓ ECS位置同步正常: (${ecsX}, ${ecsY})`);
+                } else {
+                    this.logger.warn('MainScene', `⚠ ECS位置不同步: ECS(${ecsX}, ${ecsY}) vs Sprite(${spriteX}, ${spriteY})`);
+                }
+            }
+        }
+        
+        // 检查敌人数量是否匹配
+        const enemyEntities = this.ecsAdapter.getWorld().getEntitiesWithComponent('EnemyComponent');
+        if (enemyEntities.length !== this.enemies.length) {
+            this.logger.warn('MainScene', `⚠ 敌人数量不匹配: ECS(${enemyEntities.length}) vs 数组(${this.enemies.length})`);
+        } else {
+            this.logger.info('MainScene', `✓ 敌人数量匹配: ${enemyEntities.length}`);
+        }
+        
+        // 检查咒语数量是否匹配
+        const spellEntities = this.ecsAdapter.getWorld().getEntitiesWithComponent('SpellComponent');
+        const totalSpells = this.playerSpells.length + this.enemySpells.length;
+        if (spellEntities.length !== totalSpells) {
+            this.logger.warn('MainScene', `⚠ 咒语数量不匹配: ECS(${spellEntities.length}) vs 数组(${totalSpells})`);
+        } else {
+            this.logger.info('MainScene', `✓ 咒语数量匹配: ${spellEntities.length}`);
+        }
     }
 } 

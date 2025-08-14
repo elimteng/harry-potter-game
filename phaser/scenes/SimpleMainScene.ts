@@ -1,4 +1,5 @@
 import * as Phaser from 'phaser';
+import planck, { World as B2World, Vec2 as B2Vec2, Body as B2Body } from 'planck-js';
 import { PlayerCharacter } from '../../entities/Player';
 import { EventBus } from '../EventBus';
 import { Logger } from '../../utils/Logger';
@@ -81,7 +82,7 @@ export class SimpleMainScene extends Phaser.Scene {
     private bossesKilled: number = 0;
     
     // food system
-    private foods: Phaser.Physics.Arcade.Sprite[] = [];
+    private foods: Phaser.GameObjects.Sprite[] = [];
     private floatingWeapons: Phaser.Physics.Arcade.Sprite[] = []; // floating weapon array
     private foodSpawnTimer: number = 0;
     private currentFoodSpawnInterval: number = 0;
@@ -89,10 +90,96 @@ export class SimpleMainScene extends Phaser.Scene {
     private readonly FOOD_SPAWN_MAX_INTERVAL: number = 30000; // 30 seconds
     
     private logger: Logger;
+    
+    // 背景滚动相关
+    private backgroundTiles: Phaser.GameObjects.TileSprite[] = [];
+    private backgroundSpeed: number = 50; // 背景滚动速度（像素/秒）
+
+    // === Box2D/planck 仅用于食物物理 ===
+    private b2World: B2World | null = null;
+    private b2Accumulator: number = 0; // 毫秒
+    private readonly B2_FIXED_TIMESTEP: number = 1000 / 60; // ms
+    private readonly PPM: number = 30; // 像素/米
+    private foodBodies: Map<Phaser.GameObjects.Sprite, B2Body> = new Map();
+    private enemyBodies: Map<Phaser.GameObjects.Sprite, B2Body> = new Map();
 
     constructor() {
         super({ key: 'SimpleMainScene' });
         this.logger = Logger.getInstance();
+    }
+
+    /**
+     * 初始化仅用于食物/敌人的轻量 planck 世界
+     */
+    private initPlanckWorld() {
+        if (this.b2World) return;
+        this.b2World = new planck.World(new B2Vec2(0, 10)); // 降低重力为 10 m/s^2，减缓下落
+
+        // 碰撞监听（可根据需要扩展）
+        this.b2World.on('begin-contact', (contact: any) => {
+            // 这里不做复杂逻辑，主要依靠 restitution 弹性即可
+        });
+    }
+
+    /**
+     * 同步敌人到 Box2D 代理刚体（kinematic）
+     */
+    private syncEnemyBodies() {
+        if (!this.b2World) return;
+        for (const enemy of this.enemies) {
+            if (!enemy.active) continue;
+            let body = this.enemyBodies.get(enemy);
+            const pos = new B2Vec2(enemy.x / this.PPM, enemy.y / this.PPM);
+            const halfW = Math.max(8, enemy.displayWidth * 0.5) / this.PPM;
+            const halfH = Math.max(8, enemy.displayHeight * 0.5) / this.PPM;
+            if (!body) {
+                body = this.b2World.createBody({ type: 'kinematic', position: pos, fixedRotation: true });
+                body.createFixture({
+                    shape: planck.Box(halfW, halfH),
+                    density: 1,
+                    friction: 0.4,
+                    restitution: 0.6
+                });
+                this.enemyBodies.set(enemy, body);
+            } else {
+                body.setTransform(pos, 0);
+            }
+        }
+    }
+
+    /**
+     * 步进 planck 世界并同步食物精灵位置
+     */
+    private stepPlanckAndSync(deltaMs: number) {
+        if (!this.b2World) return;
+
+        // 累积固定步长
+        this.b2Accumulator += deltaMs;
+
+        // 敌人代理刚体始终与精灵同步
+        this.syncEnemyBodies();
+
+        while (this.b2Accumulator >= this.B2_FIXED_TIMESTEP) {
+            this.b2World.step(this.B2_FIXED_TIMESTEP / 1000);
+            this.b2Accumulator -= this.B2_FIXED_TIMESTEP;
+        }
+
+        // 限制食物最大下落速度（m/s）
+        const MAX_FALL_SPEED = 8;
+        for (const body of this.foodBodies.values()) {
+            const v = body.getLinearVelocity();
+            if (v.y > MAX_FALL_SPEED) {
+                body.setLinearVelocity(new B2Vec2(v.x, MAX_FALL_SPEED));
+            }
+        }
+
+        // 把物理体的位置同步回食物精灵
+        for (const [sprite, body] of this.foodBodies.entries()) {
+            const pos = body.getPosition();
+            sprite.x = pos.x * this.PPM;
+            sprite.y = pos.y * this.PPM;
+            sprite.rotation = body.getAngle();
+        }
     }
 
     preload() {
@@ -230,8 +317,11 @@ export class SimpleMainScene extends Phaser.Scene {
         // adjust camera view
         this.cameras.main.setViewport(0, 0, gameWidth, gameHeight);
         
-        // enable physics system
+        // enable physics system（Arcade 继续用于非食物对象）
         this.physics.world.setBounds(0, 0, gameWidth, gameHeight);
+
+        // 初始化 planck 世界（重力向下）
+        this.initPlanckWorld();
         
         // create fallback textures (prevent image load failure)
         this.createFallbackTextures();
@@ -362,39 +452,106 @@ export class SimpleMainScene extends Phaser.Scene {
         const gameWidth = this.cameras.main.width || window.innerWidth;
         const gameHeight = this.cameras.main.height || window.innerHeight;
         
-        try {
-            // create background sprite, center display
-            const background = this.add.image(
-                gameWidth / 2, 
-                gameHeight / 2, 
-                'background'
-            );
-            
-            
-            // scale background to cover the whole screen, keep aspect ratio
-            const scaleX = gameWidth / background.width;
-            const scaleY = gameHeight / background.height;
-            const scale = Math.max(scaleX, scaleY);
-            
-            // ensure at least the minimum scale ratio
-            const finalScale = Math.max(scale, 0.1);
-            background.setScale(finalScale);
-            
-            
-            // ensure background is at the bottom layer
-            background.setDepth(-1);
-            
-            this.logger.info('SimpleMainScene', `background created successfully, original size: ${background.width}x${background.height}, scale: ${finalScale}`);
-        } catch (error) {
-            this.logger.error('SimpleMainScene', 'background load failed, using fallback background:', error);
-            
-            // create simple dark blue background as fallback
-            const graphics = this.add.graphics();
-            graphics.fillStyle(0x001122);
-            graphics.fillRect(0, 0, gameWidth, gameHeight);
-            graphics.setDepth(-1);
-            
+        // 直接使用无缝背景，避免接缝问题
+        this.createSeamlessBackground(gameWidth, gameHeight);
+    }
+    
+    private updateBackground(delta: number) {
+        // 根据游戏状态调整背景速度
+        let currentSpeed = this.backgroundSpeed;
+        
+        // 根据分数增加背景速度，增加紧张感
+        if (this.score > 1000) {
+            currentSpeed += 5;
         }
+        if (this.score > 3000) {
+            currentSpeed += 10;
+        }
+        if (this.score > 5000) {
+            currentSpeed += 15;
+        }
+        
+        // 更新背景滚动
+        this.backgroundTiles.forEach(tile => {
+            if (tile instanceof Phaser.GameObjects.TileSprite) {
+                // 向上滚动背景（tilePositionY 减小）
+                const scrollAmount = currentSpeed * (delta / 1000);
+                tile.tilePositionY -= scrollAmount;
+                
+                // 每5秒输出一次调试信息
+                if (this.time.now % 5000 < delta) {
+                    this.logger.info('SimpleMainScene', `背景滚动: 速度=${currentSpeed}, 滚动量=${scrollAmount.toFixed(2)}, 位置Y=${tile.tilePositionY.toFixed(2)}`);
+                }
+            }
+        });
+        
+        // 如果没有背景瓦片，输出警告
+        if (this.backgroundTiles.length === 0) {
+            this.logger.warn('SimpleMainScene', '没有背景瓦片可以滚动');
+        }
+    }
+    
+    private createSeamlessBackground(gameWidth: number, gameHeight: number) {
+        // 创建一个无缝的星空背景
+        const graphics = this.add.graphics();
+        
+        // 创建从深蓝到中蓝的渐变，更亮一些
+        graphics.fillGradientStyle(0x1a3a5a, 0x1a3a5a, 0x2d5a7a, 0x2d5a7a, 1);
+        graphics.fillRect(0, 0, gameWidth, gameHeight * 2); // 创建两倍高度的背景用于滚动
+        
+        // 添加星星效果（在更大的区域内）
+        graphics.fillStyle(0xFFFFFF, 0.9);
+        for (let i = 0; i < 200; i++) {
+            const x = Math.random() * gameWidth;
+            const y = Math.random() * (gameHeight * 2);
+            const size = Math.random() * 2 + 1;
+            graphics.fillCircle(x, y, size);
+        }
+        
+        // 将图形转换为纹理
+        graphics.generateTexture('seamless_background', gameWidth, gameHeight * 2);
+        graphics.destroy();
+        
+        // 创建可滚动的背景
+        const background = this.add.tileSprite(
+            gameWidth / 2, 
+            gameHeight / 2, 
+            gameWidth, 
+            gameHeight, 
+            'seamless_background'
+        );
+        
+        background.setOrigin(0.5, 0.5);
+        background.setDepth(-1);
+        
+        // 添加到背景数组
+        this.backgroundTiles.push(background);
+        
+        this.logger.info('SimpleMainScene', '创建无缝星空背景成功');
+    }
+    
+    /**
+     * 设置背景滚动速度
+     */
+    public setBackgroundSpeed(speed: number): void {
+        this.backgroundSpeed = speed;
+        this.logger.info('SimpleMainScene', `背景速度设置为: ${speed}`);
+    }
+    
+    /**
+     * 暂停背景滚动
+     */
+    public pauseBackground(): void {
+        this.backgroundSpeed = 0;
+        this.logger.info('SimpleMainScene', '背景滚动已暂停');
+    }
+    
+    /**
+     * 恢复背景滚动
+     */
+    public resumeBackground(): void {
+        this.backgroundSpeed = 50;
+        this.logger.info('SimpleMainScene', '背景滚动已恢复');
     }
 
     private setupInput() {
@@ -426,6 +583,15 @@ export class SimpleMainScene extends Phaser.Scene {
             // add K key for testing screen shake
             this.input.keyboard.addKey('K').on('down', () => {
                 this.createScreenShake(300, 2);
+            });
+            
+            // add B key for testing background control
+            this.input.keyboard.addKey('B').on('down', () => {
+                if (this.backgroundSpeed > 0) {
+                    this.pauseBackground();
+                } else {
+                    this.resumeBackground();
+                }
             });
             
             // add number key to switch character
@@ -1525,6 +1691,9 @@ export class SimpleMainScene extends Phaser.Scene {
     }
 
     update(time: number, delta: number) {
+        // 更新背景滚动（无论游戏状态如何）
+        this.updateBackground(delta);
+        
         if (this.gameState !== GameState.PLAYING) {
             return;
         }
@@ -1581,6 +1750,9 @@ export class SimpleMainScene extends Phaser.Scene {
             this.foodSpawnTimer = 0;
         }
         
+        // 先步进 Box2D 并同步精灵位置
+        this.stepPlanckAndSync(delta);
+
         // 更新食物
         this.updateFoods(delta);
         
@@ -2698,10 +2870,9 @@ export class SimpleMainScene extends Phaser.Scene {
         const x = Math.random() * (gameWidth - 100) + 50;
         const y = -50;
         
-        // 创建食物精灵
-        const food = this.physics.add.sprite(x, y, selectedFoodType);
+        // 创建食物精灵（不接入 Arcade，交给 Box2D）
+        const food = this.add.sprite(x, y, selectedFoodType);
         food.setScale(0.08); // 食物尺寸
-        food.setVelocityY(100); // 下降速度
         food.setDepth(5);
         
         // 添加食物属性
@@ -2721,10 +2892,31 @@ export class SimpleMainScene extends Phaser.Scene {
             repeat: -1,
             yoyo: true
         });
-        
+
         this.foods.push(food);
-        
-        
+
+        // === 为食物创建 Box2D 刚体 ===
+        if (this.b2World) {
+            const body = this.b2World.createDynamicBody({
+                position: new B2Vec2(food.x / this.PPM, food.y / this.PPM),
+                fixedRotation: false,
+                linearDamping: 0.25, // 增加线性阻尼，模拟空气阻力
+                angularDamping: 0.05,
+                userData: { type: 'food', sprite: food }
+            });
+
+            const radiusPx = 12;
+            const radius = radiusPx / this.PPM;
+            body.createFixture({
+                shape: planck.Circle(radius),
+                density: 0.1,
+                friction: 0.2,
+                restitution: 0.6
+            });
+
+            this.foodBodies.set(food, body);
+        }
+
         // 生成食物后重新设置随机间隔
         this.setRandomFoodSpawnInterval();
     }
@@ -2743,6 +2935,11 @@ export class SimpleMainScene extends Phaser.Scene {
             
             // 检查食物是否超出屏幕底部或存活时间结束
             if (food.y > gameHeight + 50 || (food as any).lifeTimer <= 0) {
+                const body = this.foodBodies.get(food);
+                if (body && this.b2World) {
+                    this.b2World.destroyBody(body);
+                }
+                this.foodBodies.delete(food);
                 food.destroy();
                 this.foods.splice(i, 1);
                 continue;
@@ -2751,7 +2948,7 @@ export class SimpleMainScene extends Phaser.Scene {
     }
 
     /**
-     * 更新漂浮武器
+     * 更新浮动武器
      */
     private updateFloatingWeapons(delta: number) {
         const gameHeight = this.cameras.main.height || window.innerHeight;

@@ -13,6 +13,7 @@
   "dependencies": {
     "firebase": "^11.9.1",
     "phaser": "^3.90.0",
+    "planck-js": "^0.3.0",
     "pixi.js": "^7.3.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
