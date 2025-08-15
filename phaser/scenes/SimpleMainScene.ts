@@ -82,7 +82,7 @@ export class SimpleMainScene extends Phaser.Scene {
     private bossesKilled: number = 0;
     
     // food system
-    private foods: Phaser.GameObjects.Sprite[] = [];
+    private foods: Phaser.Physics.Arcade.Sprite[] = [];
     private floatingWeapons: Phaser.Physics.Arcade.Sprite[] = []; // floating weapon array
     private foodSpawnTimer: number = 0;
     private currentFoodSpawnInterval: number = 0;
@@ -100,7 +100,7 @@ export class SimpleMainScene extends Phaser.Scene {
     private b2Accumulator: number = 0; // 毫秒
     private readonly B2_FIXED_TIMESTEP: number = 1000 / 60; // ms
     private readonly PPM: number = 30; // 像素/米
-    private foodBodies: Map<Phaser.GameObjects.Sprite, B2Body> = new Map();
+
     private enemyBodies: Map<Phaser.GameObjects.Sprite, B2Body> = new Map();
 
     constructor() {
@@ -164,22 +164,7 @@ export class SimpleMainScene extends Phaser.Scene {
             this.b2Accumulator -= this.B2_FIXED_TIMESTEP;
         }
 
-        // 限制食物最大下落速度（m/s）
-        const MAX_FALL_SPEED = 8;
-        for (const body of this.foodBodies.values()) {
-            const v = body.getLinearVelocity();
-            if (v.y > MAX_FALL_SPEED) {
-                body.setLinearVelocity(new B2Vec2(v.x, MAX_FALL_SPEED));
-            }
-        }
 
-        // 把物理体的位置同步回食物精灵
-        for (const [sprite, body] of this.foodBodies.entries()) {
-            const pos = body.getPosition();
-            sprite.x = pos.x * this.PPM;
-            sprite.y = pos.y * this.PPM;
-            sprite.rotation = body.getAngle();
-        }
     }
 
     preload() {
@@ -2161,11 +2146,13 @@ export class SimpleMainScene extends Phaser.Scene {
         for (let i = this.foods.length - 1; i >= 0; i--) {
             const food = this.foods[i];
             
+            // 跳过已经碰撞过的食物
+            if ((food as any).hasCollided) continue;
+            
             if (this.physics.overlap(this.player!, food)) {
                 // 食物被拾取
                 const foodType = (food as any).foodType;
                 const healAmount = (food as any).healAmount;
-                
                 
                 // 治疗玩家
                 this.lives = Math.min(5, this.lives + healAmount); // 最多5格血
@@ -2176,9 +2163,72 @@ export class SimpleMainScene extends Phaser.Scene {
                     this.activateRonMode();
                 }
                 
-                // 销毁食物
-                food.destroy();
-                this.foods.splice(i, 1);
+                // 标记已碰撞，避免重复处理
+                (food as any).hasCollided = true;
+                
+                // 计算真实的物理反弹
+                const playerBody = this.player!.body as Phaser.Physics.Arcade.Body;
+                const foodBody = food.body as Phaser.Physics.Arcade.Body;
+                
+                // 计算碰撞点和法向量
+                const dx = food.x - this.player!.x;
+                const dy = food.y - this.player!.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // 归一化碰撞方向
+                const normalX = dx / distance;
+                const normalY = dy / distance;
+                
+                // 计算相对速度
+                const relativeVelX = foodBody.velocity.x - playerBody.velocity.x;
+                const relativeVelY = foodBody.velocity.y - playerBody.velocity.y;
+                
+                // 计算沿法向量的速度分量
+                const normalVelocity = relativeVelX * normalX + relativeVelY * normalY;
+                
+                // 如果物体正在分离，不进行反弹
+                if (normalVelocity > 0) return;
+                
+                // 弹性系数（0-1，1为完全弹性碰撞）
+                const restitution = 0.8;
+                
+                // 计算冲量
+                const impulse = -(1 + restitution) * normalVelocity;
+                const impulseX = impulse * normalX;
+                const impulseY = impulse * normalY;
+                
+                // 应用反弹速度（食物质量较小，反弹更明显）
+                const bounceMultiplier = 1.5;
+                foodBody.setVelocity(
+                    foodBody.velocity.x + impulseX * bounceMultiplier,
+                    foodBody.velocity.y + impulseY * bounceMultiplier
+                );
+                
+                // 添加旋转效果（基于碰撞强度）
+                const rotationSpeed = Math.abs(impulse) * 50;
+                foodBody.setAngularVelocity(rotationSpeed * (Math.random() > 0.5 ? 1 : -1));
+                
+                // 简单的颜色变化表示治疗
+                food.setTint(0x00FF00); // 绿色表示治疗
+                
+                // 延迟销毁食物（800毫秒后）
+                this.time.delayedCall(800, () => {
+                    if (food && food.active) {
+                        // 淡出效果
+                        this.tweens.add({
+                            targets: food,
+                            alpha: 0,
+                            duration: 200,
+                            onComplete: () => {
+                                food.destroy();
+                                const index = this.foods.indexOf(food);
+                                if (index > -1) {
+                                    this.foods.splice(index, 1);
+                                }
+                            }
+                        });
+                    }
+                });
                 
                 break;
             }
@@ -2870,10 +2920,14 @@ export class SimpleMainScene extends Phaser.Scene {
         const x = Math.random() * (gameWidth - 100) + 50;
         const y = -50;
         
-        // 创建食物精灵（不接入 Arcade，交给 Box2D）
-        const food = this.add.sprite(x, y, selectedFoodType);
+        // 创建食物精灵（使用 Arcade 物理系统以便与玩家碰撞检测）
+        const food = this.physics.add.sprite(x, y, selectedFoodType);
         food.setScale(0.08); // 食物尺寸
         food.setDepth(5);
+        
+        // 设置食物的物理属性
+        food.body!.setVelocityY(50); // 向下掉落
+        food.body!.setGravityY(100); // 重力加速度
         
         // 添加食物属性
         (food as any).foodType = selectedFoodType;
@@ -2895,28 +2949,6 @@ export class SimpleMainScene extends Phaser.Scene {
 
         this.foods.push(food);
 
-        // === 为食物创建 Box2D 刚体 ===
-        if (this.b2World) {
-            const body = this.b2World.createDynamicBody({
-                position: new B2Vec2(food.x / this.PPM, food.y / this.PPM),
-                fixedRotation: false,
-                linearDamping: 0.25, // 增加线性阻尼，模拟空气阻力
-                angularDamping: 0.05,
-                userData: { type: 'food', sprite: food }
-            });
-
-            const radiusPx = 12;
-            const radius = radiusPx / this.PPM;
-            body.createFixture({
-                shape: planck.Circle(radius),
-                density: 0.1,
-                friction: 0.2,
-                restitution: 0.6
-            });
-
-            this.foodBodies.set(food, body);
-        }
-
         // 生成食物后重新设置随机间隔
         this.setRandomFoodSpawnInterval();
     }
@@ -2935,11 +2967,6 @@ export class SimpleMainScene extends Phaser.Scene {
             
             // 检查食物是否超出屏幕底部或存活时间结束
             if (food.y > gameHeight + 50 || (food as any).lifeTimer <= 0) {
-                const body = this.foodBodies.get(food);
-                if (body && this.b2World) {
-                    this.b2World.destroyBody(body);
-                }
-                this.foodBodies.delete(food);
                 food.destroy();
                 this.foods.splice(i, 1);
                 continue;
